@@ -1,0 +1,211 @@
+@import "tailwindcss";
+
+/* 
+  DIRECTION ARTISTIQUE - Minimaliste
+  Cible: Etudiants CAPEPS/Agregation
+  Intention: Clarte, Efficacite, Modernite
+  
+  Palette:
+    - Primary: Indigo (#6366f1) - Focus, Serieux
+    - Accent: Emerald (#10b981) - Validation, Reussite
+    - Neutral: Slate - Lisibilite maximale
+    - Background: Slate 50/White - Reposant
+*/
+
+:root {
+    /* Primary - Indigo */
+    --primary-50: #eef2ff;
+    --primary-100: #e0e7ff;
+    --primary-200: #c7d2fe;
+    --primary-500: #6366f1;
+    --primary-600: #4f46e5;
+    --primary-700: #4338ca;
+
+    /* Accent - Emerald */
+    --accent-50: #ecfdf5;
+    --accent-100: #d1fae5;
+    --accent-500: #10b981;
+    --accent-600: #059669;
+}
+
+/* Base Styles */
+* {
+    box-sizing: border-box;
+}
+
+body {
+    background-color: #f8fafc;
+    /* Slate-50 */
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #334155;
+    /* Slate-700 */
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-weight: 600;
+    line-height: 1.3;
+    color: #0f172a;
+    /* Slate-900 */
+}
+
+/* Utilities */
+.shadow-sm {
+    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+}
+
+.shadow-md {
+    box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+}
+
+/* Transitions */
+button,
+a,
+input {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+}
+
+/* Animations for Cycling Header */
+@keyframes scroll {
+    from {
+        transform: translateX(0);
+    }
+
+    to {
+        transform: translateX(-50%);
+    }
+}
+
+@keyframes bounce {
+
+    0%,
+    100% {
+        transform: translateY(0);
+    }
+
+    50% {
+        transform: translateY(-2px);
+    }
+}
+
+.animate-scroll-slow {
+    width: 200%;
+    animation: scroll 30s linear infinite;
+}
+
+.animate-scroll-medium {
+    width: 200%;
+    animation: scroll 15s linear infinite;
+}
+
+.animate-scroll-fast {
+    width: 200%;
+    animation: scroll 2s linear infinite;
+}
+
+.animate-bounce-subtle {
+    animation: bounce 1s infinite ease-in-out;
+}
+
+.animate-spin-slow {
+    animation: spin 1s linear infinite;
+    transform-box: fill-box;
+    transform-origin: center;
+}
+
+@keyframes spin {
+    from {
+        transform: rotate(0deg);
+    }
+
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@keyframes pedaling {
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
+}
+
+.animate-pedal {
+    animation: pedaling 1s linear infinite;
+    transform-box: fill-box;
+    transform-origin: center;
+    /* origin handled in SVG mostly */
+}
+
+/* Slower scrolling for background */
+.animate-scroll-very-slow {
+    width: 200%;
+    animation: scroll 60s linear infinite;
+}
+
+/* Smoother road */
+.animate-scroll-road {
+    width: 200%;
+    animation: scroll 4s linear infinite;
+}
+
+/* Fade In Animation */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.animate-fadeIn {
+    animation: fadeIn 0.5s ease-out forwards;
+}
+
+/* 3D Flip Card Utilities */
+.perspective-1000 {
+    perspective: 1000px;
+}
+
+.transform-style-3d {
+    transform-style: preserve-3d;
+}
+
+.backface-hidden {
+    backface-visibility: hidden;
+}
+
+.rotate-y-180 {
+    transform: rotateY(180deg);
+}

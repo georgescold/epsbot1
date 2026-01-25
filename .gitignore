@@ -1,0 +1,21 @@
+# Environment files
+.env
+server/.env
+
+# Config files with secrets
+config.json
+server/config.json
+
+# Database
+*.db
+
+# Python
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# IDE
+.claude/
+.vscode/
