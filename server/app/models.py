@@ -3,6 +3,24 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
 
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Password reset fields
+    reset_token = Column(String, nullable=True)
+    reset_token_expires = Column(DateTime, nullable=True)
+
+    # Relations
+    flashcards = relationship("Flashcard", back_populates="user")
+    dissertation_folders = relationship("DissertationFolder", back_populates="user")
+
+
 class Source(Base):
     __tablename__ = "sources"
 
@@ -75,9 +93,11 @@ class DissertationFolder(Base):
     __tablename__ = "dissertation_folders"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    name = Column(String, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    user = relationship("User", back_populates="dissertation_folders")
     dissertations = relationship("SavedDissertation", back_populates="folder", cascade="all, delete-orphan")
 
 class SavedDissertation(Base):
@@ -131,4 +151,8 @@ class Flashcard(Base):
     # Learning/Relearning step: Current step in learning phase (0, 1, 2...)
     step = Column(Integer, default=0)
 
+    # User ownership
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+
     argument = relationship("Argument", back_populates="flashcards")
+    user = relationship("User", back_populates="flashcards")

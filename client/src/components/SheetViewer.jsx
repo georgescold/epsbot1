@@ -104,6 +104,73 @@ const SheetViewer = () => {
         }
     };
 
+    // Helper function to check if year is already in content text
+    const contentContainsYear = (content, year) => {
+        if (!year || !content) return false;
+        // Extract 4-digit year from the year field
+        const yearMatch = String(year).match(/\d{4}/);
+        if (!yearMatch) return false;
+        return content.includes(yearMatch[0]);
+    };
+
+    // Helper to build text runs with highlighted year
+    const buildProofTextRuns = (content, year, isNuance) => {
+        // All text in black for both nuance and proof
+        const textColor = "1E293B";
+
+        // Safety check - if content is empty, return empty array
+        if (!content || !content.trim()) {
+            return [new TextRun({ text: "[Contenu manquant]", size: 20, color: "94A3B8", font: "Sora" })];
+        }
+
+        // If no year or year already in content, just return plain text
+        if (!year || contentContainsYear(content, year)) {
+            // Try to highlight the year in the content if it exists
+            const yearMatch = content.match(/\(?\d{4}\)?/);
+            if (yearMatch) {
+                const parts = content.split(yearMatch[0]);
+                const runs = [];
+
+                // Add text before year (if exists)
+                if (parts[0]) {
+                    runs.push(new TextRun({ text: parts[0], size: 20, color: textColor, font: "Sora" }));
+                }
+
+                // Add highlighted year
+                runs.push(new TextRun({
+                    text: yearMatch[0],
+                    size: 20,
+                    color: textColor,
+                    bold: true,
+                    shading: { type: ShadingType.SOLID, color: "FEF08A", fill: "FEF08A" }, // Yellow highlight
+                    font: "Sora"
+                }));
+
+                // Add text after year (if exists)
+                const afterText = parts.slice(1).join(yearMatch[0]);
+                if (afterText) {
+                    runs.push(new TextRun({ text: afterText, size: 20, color: textColor, font: "Sora" }));
+                }
+
+                return runs;
+            }
+            return [new TextRun({ text: content, size: 20, color: textColor, font: "Sora" })];
+        }
+
+        // Year not in content, append it with highlight
+        return [
+            new TextRun({ text: content + " ", size: 20, color: textColor, font: "Sora" }),
+            new TextRun({
+                text: `(${year})`,
+                size: 20,
+                color: textColor,
+                bold: true,
+                shading: { type: ShadingType.SOLID, color: "FEF08A", fill: "FEF08A" }, // Yellow highlight
+                font: "Sora"
+            })
+        ];
+    };
+
     const downloadWord = async () => {
         if (!sheetData) return;
 
@@ -119,10 +186,11 @@ const SheetViewer = () => {
                         bold: true,
                         size: 56, // 28pt
                         color: "0F172A",
+                        font: "Sora",
                     }),
                 ],
                 heading: HeadingLevel.TITLE,
-                spacing: { after: 400 },
+                spacing: { after: 600 },
             })
         );
 
@@ -131,7 +199,7 @@ const SheetViewer = () => {
             const args = sheetData[period];
             if (args.length === 0) return;
 
-            // Period Header
+            // Period Header - Clean and readable style
             children.push(
                 new Paragraph({
                     children: [
@@ -139,22 +207,25 @@ const SheetViewer = () => {
                             text: period,
                             bold: true,
                             size: 28, // 14pt
-                            color: "FFFFFF",
+                            color: "4F46E5", // Indigo color
+                            font: "Sora",
                         }),
                     ],
-                    shading: {
-                        type: ShadingType.SOLID,
-                        color: "0F172A",
-                        fill: "0F172A",
+                    border: {
+                        bottom: {
+                            color: "4F46E5",
+                            size: 12,
+                            style: BorderStyle.SINGLE,
+                            space: 4,
+                        },
                     },
-                    spacing: { before: 400, after: 200 },
-                    indent: { left: 100, right: 100 },
+                    spacing: { before: 600, after: 400 },
                 })
             );
 
             // Arguments
-            args.forEach((arg) => {
-                // Argument content (bold)
+            args.forEach((arg, argIndex) => {
+                // Argument content (bold) with more spacing
                 children.push(
                     new Paragraph({
                         children: [
@@ -163,9 +234,10 @@ const SheetViewer = () => {
                                 bold: true,
                                 size: 24, // 12pt
                                 color: "0F172A",
+                                font: "Sora",
                             }),
                         ],
-                        spacing: { before: 300, after: 200 },
+                        spacing: { before: 400, after: 300 },
                         border: {
                             left: {
                                 color: "4F46E5",
@@ -178,14 +250,19 @@ const SheetViewer = () => {
                     })
                 );
 
-                // Proofs
+                // Proofs with improved colors and spacing - skip empty proofs
                 arg.proofs.forEach((proof) => {
-                    const isNuance = proof.is_nuance;
-                    const labelColor = isNuance ? "DC2626" : "4F46E5";
-                    const labelText = isNuance ? "Nuance / Limite : " : "Preuve : ";
-                    const bgColor = isNuance ? "FEF2F2" : "EEF2FF";
+                    // Skip proofs with no content
+                    if (!proof.content || !proof.content.trim()) return;
 
-                    const proofText = `${proof.content}${proof.year ? ` (${proof.year})` : ''}`;
+                    const isNuance = proof.is_nuance;
+                    // Nuance: red label + red border, light red bg; Proof: green bg
+                    const labelColor = isNuance ? "DC2626" : "166534"; // Red for nuance, dark green for proof
+                    const labelText = isNuance ? "Nuance : " : "Preuve : ";
+                    const bgColor = isNuance ? "FEF2F2" : "DCFCE7"; // Light red for nuance, light green for proof
+                    const borderColor = isNuance ? "DC2626" : "22C55E"; // Red for nuance, green for proof
+
+                    const proofTextRuns = buildProofTextRuns(proof.content, proof.year, isNuance);
 
                     children.push(
                         new Paragraph({
@@ -195,12 +272,9 @@ const SheetViewer = () => {
                                     bold: true,
                                     size: 20, // 10pt
                                     color: labelColor,
+                                    font: "Sora",
                                 }),
-                                new TextRun({
-                                    text: proofText,
-                                    size: 20,
-                                    color: "1E293B",
-                                }),
+                                ...proofTextRuns
                             ],
                             shading: {
                                 type: ShadingType.SOLID,
@@ -209,37 +283,37 @@ const SheetViewer = () => {
                             },
                             border: {
                                 left: {
-                                    color: labelColor,
+                                    color: borderColor,
                                     size: 18,
                                     style: BorderStyle.SINGLE,
                                     space: 8,
                                 },
                             },
-                            spacing: { before: 100, after: 100 },
+                            spacing: { before: 200, after: 200 },
                             indent: { left: 400 },
                         })
                     );
 
-                    // Citation/complement
+                    // Citation/complement - NOT italic, black text
                     if (proof.complement && proof.complement.trim() && !proof.complement.toLowerCase().includes('non disponible')) {
                         children.push(
                             new Paragraph({
                                 children: [
                                     new TextRun({
                                         text: `"${proof.complement}"`,
-                                        italics: true,
                                         size: 18, // 9pt
-                                        color: "475569",
+                                        color: "1E293B", // Black
+                                        font: "Sora",
                                     }),
                                 ],
-                                spacing: { before: 50, after: 150 },
+                                spacing: { before: 100, after: 250 },
                                 indent: { left: 600 },
                             })
                         );
                     }
                 });
 
-                // Source
+                // Source with more spacing after
                 children.push(
                     new Paragraph({
                         children: [
@@ -247,17 +321,37 @@ const SheetViewer = () => {
                                 text: `Source : ${arg.source}`,
                                 size: 16, // 8pt
                                 color: "94A3B8",
+                                font: "Sora",
                             }),
                         ],
                         alignment: AlignmentType.RIGHT,
-                        spacing: { before: 100, after: 300 },
+                        spacing: { before: 150, after: 450 },
                     })
                 );
+
+                // Add extra spacing between arguments
+                if (argIndex < args.length - 1) {
+                    children.push(
+                        new Paragraph({
+                            children: [],
+                            spacing: { before: 100, after: 100 },
+                        })
+                    );
+                }
             });
         });
 
-        // Create document
+        // Create document with Sora font as default
         const doc = new Document({
+            styles: {
+                default: {
+                    document: {
+                        run: {
+                            font: "Sora",
+                        },
+                    },
+                },
+            },
             sections: [{
                 properties: {
                     page: {

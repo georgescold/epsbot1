@@ -7,3 +7,6 @@ pymupdf
 anthropic
 python-dotenv
 psycopg2-binary
+bcrypt
+python-jose[cryptography]
+pydantic[email]

@@ -1,20 +1,26 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
 import shutil
 import os
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .database import engine, Base, get_db, SessionLocal
-from .models import Source, Argument, Proof, DefinitionSource, DefinitionExtraction, Flashcard
+from .models import Source, Argument, Proof, DefinitionSource, DefinitionExtraction, Flashcard, User, DissertationFolder, SavedDissertation
 from .services.pdf_processing import extract_text_from_pdf
 from .services.ai_analyzer import analyze_full_text, analyze_full_definition_text, set_api_key
 from .services.dissertation_generator import generate_dissertation_content, generate_plan_content
 from .services.flashcard_generator import generate_flashcards_from_argument
+from .services.auth import (
+    UserCreate, UserLogin, Token, UserResponse, ForgotPasswordRequest, ResetPasswordRequest,
+    create_user, authenticate_user, create_access_token, get_user_by_email,
+    get_current_user, get_current_user_required, create_reset_token, verify_reset_token,
+    reset_password, send_reset_email, ACCESS_TOKEN_EXPIRE_MINUTES
+)
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -184,6 +190,82 @@ def delete_api_key():
 @app.get("/")
 def read_root():
     return {"message": "EPS Bot Backend is running"}
+
+
+# --- AUTHENTICATION ENDPOINTS ---
+
+@app.post("/auth/register", response_model=Token)
+def register(user_data: UserCreate, db: Session = Depends(get_db)):
+    """Register a new user"""
+    # Check if email already exists
+    existing = get_user_by_email(db, user_data.email)
+    if existing:
+        raise HTTPException(status_code=400, detail="Cet email est deja utilise")
+
+    # Validate password length
+    if len(user_data.password) < 6:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit contenir au moins 6 caracteres")
+
+    # Create user
+    user = create_user(db, user_data)
+
+    # Check if this is the first user - migrate existing data
+    user_count = db.query(User).count()
+    if user_count == 1:
+        # Migrate orphan flashcards and folders to first user
+        db.query(Flashcard).filter(Flashcard.user_id == None).update({"user_id": user.id})
+        db.query(DissertationFolder).filter(DissertationFolder.user_id == None).update({"user_id": user.id})
+        db.commit()
+        print(f"[{datetime.now()}] Migrated existing data to first user: {user.email}")
+
+    # Generate token
+    access_token = create_access_token(data={"sub": str(user.id)})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post("/auth/login", response_model=Token)
+def login(user_data: UserLogin, db: Session = Depends(get_db)):
+    """Login and get access token"""
+    user = authenticate_user(db, user_data.email, user_data.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+
+    access_token = create_access_token(data={"sub": str(user.id)})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def get_me(current_user: User = Depends(get_current_user_required)):
+    """Get current user info"""
+    return current_user
+
+
+@app.post("/auth/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Request password reset email"""
+    user = get_user_by_email(db, request.email)
+    if not user:
+        # Don't reveal if email exists
+        return {"message": "Si cet email existe, un lien de reinitialisation a ete envoye"}
+
+    token = create_reset_token(db, user)
+    await send_reset_email(user.email, token)
+
+    return {"message": "Si cet email existe, un lien de reinitialisation a ete envoye"}
+
+
+@app.post("/auth/reset-password")
+def reset_password_endpoint(request: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Reset password with token"""
+    user = verify_reset_token(db, request.token)
+    if not user:
+        raise HTTPException(status_code=400, detail="Token invalide ou expire")
+
+    if len(request.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Le mot de passe doit contenir au moins 6 caracteres")
+
+    reset_password(db, user, request.new_password)
+    return {"message": "Mot de passe reinitialise avec succes"}
 
 
 @app.post("/upload")
@@ -639,7 +721,10 @@ class ReviewSubmission(BaseModel):
     rating: int  # 1=Again, 2=Hard, 3=Good, 4=Easy
 
 @app.get("/revisions/decks")
-def get_revision_decks(db: Session = Depends(get_db)):
+def get_revision_decks(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
     """
     Returns stats for each theme using FSRS states:
     - total cards
@@ -648,10 +733,16 @@ def get_revision_decks(db: Session = Depends(get_db)):
     - learning count (state=1)
     - review count (state=2)
     - relearning count (state=3)
+    Filtered by current user if authenticated.
     """
     themes = {}
 
-    cards = db.query(Flashcard).join(Argument).all()
+    # Filter by user_id if authenticated
+    query = db.query(Flashcard).join(Argument)
+    if current_user:
+        query = query.filter(Flashcard.user_id == current_user.id)
+
+    cards = query.all()
     now = datetime.utcnow()
 
     for card in cards:
@@ -689,23 +780,33 @@ def get_revision_decks(db: Session = Depends(get_db)):
     return list(themes.values())
 
 @app.get("/revisions/deck/{theme}/due")
-def get_due_cards(theme: str, db: Session = Depends(get_db)):
+def get_due_cards(
+    theme: str,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
     """
     Get cards due for review for a specific theme.
     Returns cards with FSRS interval previews for each rating.
+    Filtered by current user if authenticated.
     """
     now = datetime.utcnow()
 
+    # Base query with user filter
+    base_filter = [Argument.theme == theme]
+    if current_user:
+        base_filter.append(Flashcard.user_id == current_user.id)
+
     # Get Due Review/Learning/Relearning Cards (state != 0 and due)
     due_cards = db.query(Flashcard).join(Argument).filter(
-        Argument.theme == theme,
+        *base_filter,
         Flashcard.due_date <= now,
         Flashcard.state != State.NEW
     ).all()
 
     # Get New Cards (limit to 20 per session - Anki default)
     new_cards = db.query(Flashcard).join(Argument).filter(
-        Argument.theme == theme,
+        *base_filter,
         Flashcard.state == State.NEW
     ).limit(20).all()
 
@@ -743,7 +844,12 @@ def get_due_cards(theme: str, db: Session = Depends(get_db)):
     return result
 
 @app.post("/revisions/review/{card_id}")
-def submit_review(card_id: int, submission: ReviewSubmission, db: Session = Depends(get_db)):
+def submit_review(
+    card_id: int,
+    submission: ReviewSubmission,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
     """
     Submit a review rating for a card using FSRS algorithm.
     Rating: 1=Again, 2=Hard, 3=Good, 4=Easy
@@ -751,6 +857,10 @@ def submit_review(card_id: int, submission: ReviewSubmission, db: Session = Depe
     card = db.query(Flashcard).filter(Flashcard.id == card_id).first()
     if not card:
         raise HTTPException(status_code=404, detail="Card not found")
+
+    # Verify card belongs to current user if authenticated
+    if current_user and card.user_id and card.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Cette carte ne vous appartient pas")
 
     # Validate rating
     if submission.rating < 1 or submission.rating > 4:
@@ -792,10 +902,15 @@ def submit_review(card_id: int, submission: ReviewSubmission, db: Session = Depe
     }
 
 @app.post("/revisions/generate-for-all")
-def generate_all_flashcards(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def generate_all_flashcards(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
     """
     Manually trigger flashcard generation for all existing arguments.
     Useful if arguments already exist but no cards.
+    Creates cards for the current user if authenticated.
     """
     arguments = db.query(Argument).all()
     # This might be huge, so we should do it in background
@@ -804,27 +919,28 @@ def generate_all_flashcards(background_tasks: BackgroundTasks, db: Session = Dep
     analysis_jobs[job_id] = {
         "status": "pending",
         "progress": 0,
-        "message": "Démarrage génération...",
+        "message": "Demarrage generation...",
         "filename": "Flashcards"
     }
 
     # Pass IDs only to avoid DetachedInstanceError
     argument_ids = [arg.id for arg in arguments]
-    background_tasks.add_task(background_generate_flashcards, job_id, argument_ids, db)
+    user_id = current_user.id if current_user else None
+    background_tasks.add_task(background_generate_flashcards, job_id, argument_ids, user_id)
     return {"message": "Flashcard generation started", "job_id": job_id}
 
-def background_generate_flashcards(job_id: str, argument_ids: List[int], db: Session):
+def background_generate_flashcards(job_id: str, argument_ids: List[int], user_id: Optional[int]):
     # Better to create new session in thread, but for simplicity here strictly:
     # We iterate and generate.
-    print(f"[{datetime.now()}] Starting Batch Flashcard Generation for {len(argument_ids)} arguments...")
-    
+    print(f"[{datetime.now()}] Starting Batch Flashcard Generation for {len(argument_ids)} arguments (user_id={user_id})...")
+
     # Re-create session safer
     local_db = SessionLocal()
-    
+
     # Update job to processing
     analysis_jobs[job_id]["status"] = "processing"
     analysis_jobs[job_id]["message"] = "Analyse des arguments..."
-    
+
     try:
         count = 0
         total_args = len(argument_ids)
@@ -833,41 +949,48 @@ def background_generate_flashcards(job_id: str, argument_ids: List[int], db: Ses
             # Fetch fresh object with relationship
             arg = local_db.query(Argument).filter(Argument.id == arg_id).first()
             if not arg: continue
-            # Check if cards already exist?
-            existing = local_db.query(Flashcard).filter(Flashcard.argument_id == arg.id).count()
-            if existing > 0: continue
-            
+
+            # Check if cards already exist for this user
+            existing_query = local_db.query(Flashcard).filter(Flashcard.argument_id == arg.id)
+            if user_id:
+                existing_query = existing_query.filter(Flashcard.user_id == user_id)
+            if existing_query.count() > 0:
+                continue
+
             # Prepare contextual strings
             proofs_txt = "\n".join([f"- {p.content} ({p.specific_year}) {'[NUANCE]' if p.is_nuance else ''}" for p in arg.proofs])
-            
+
             cards_data = generate_flashcards_from_argument(arg.theme, arg.chronology_period, arg.content, proofs_txt)
-            
+
             for c in cards_data:
-                verification = local_db.query(Flashcard).filter(Flashcard.argument_id == arg.id, Flashcard.front == c['front']).first()
+                verification = local_db.query(Flashcard).filter(
+                    Flashcard.argument_id == arg.id,
+                    Flashcard.front == c['front'],
+                    Flashcard.user_id == user_id if user_id else True
+                ).first()
                 if not verification:
                     fc = Flashcard(
                         argument_id=arg.id,
                         front=c['front'],
-                        back=c['back']
+                        back=c['back'],
+                        user_id=user_id
                     )
                     local_db.add(fc)
                     count += 1
-            
+
             local_db.commit()
-            
-            local_db.commit()
-            
+
             # Update progress
             current_progress = int(((i + 1) / total_args) * 100)
             analysis_jobs[job_id]["progress"] = current_progress
-            analysis_jobs[job_id]["message"] = f"Génération... {current_progress}%"
+            analysis_jobs[job_id]["message"] = f"Generation... {current_progress}%"
 
         print(f"[{datetime.now()}] Batch Generation Complete. Created {count} cards.")
         analysis_jobs[job_id]["status"] = "completed"
-        analysis_jobs[job_id]["message"] = f"Terminé ! {count} cartes créées."
+        analysis_jobs[job_id]["message"] = f"Termine ! {count} cartes creees."
         analysis_jobs[job_id]["progress"] = 100
-        
-        
+
+
     except Exception as e:
         print(f"[{datetime.now()}] Job Failed: {e}")
         analysis_jobs[job_id]["status"] = "failed"
@@ -886,7 +1009,6 @@ def get_definitions(db: Session = Depends(get_db)):
     return {"message": "Deleted"}
 
 # --- LIBRARY ENDPOINTS (Folders & Saved Dissertations) ---
-from .models import DissertationFolder, SavedDissertation
 
 class FolderCreate(BaseModel):
     name: str
@@ -898,8 +1020,16 @@ class DissertationSave(BaseModel):
     type: str
 
 @app.get("/folders")
-def get_folders(db: Session = Depends(get_db)):
-    folders = db.query(DissertationFolder).all()
+def get_folders(
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
+    """Get folders filtered by current user if authenticated"""
+    query = db.query(DissertationFolder)
+    if current_user:
+        query = query.filter(DissertationFolder.user_id == current_user.id)
+
+    folders = query.all()
     result = []
     for f in folders:
         result.append({
@@ -908,9 +1038,9 @@ def get_folders(db: Session = Depends(get_db)):
             "created_at": f.created_at,
             "dissertations": [
                 {
-                    "id": d.id, 
-                    "subject": d.subject, 
-                    "type": d.type, 
+                    "id": d.id,
+                    "subject": d.subject,
+                    "type": d.type,
                     "created_at": d.created_at
                 } for d in f.dissertations
             ]
@@ -918,35 +1048,64 @@ def get_folders(db: Session = Depends(get_db)):
     return result
 
 @app.post("/folders")
-def create_folder(folder: FolderCreate, db: Session = Depends(get_db)):
-    # Check duplicate name
-    existing = db.query(DissertationFolder).filter(DissertationFolder.name == folder.name).first()
+def create_folder(
+    folder: FolderCreate,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
+    """Create a folder for the current user"""
+    # Check duplicate name for this user
+    query = db.query(DissertationFolder).filter(DissertationFolder.name == folder.name)
+    if current_user:
+        query = query.filter(DissertationFolder.user_id == current_user.id)
+    existing = query.first()
     if existing:
-        raise HTTPException(status_code=400, detail="Un dossier avec ce nom existe déjà.")
-    
-    new_folder = DissertationFolder(name=folder.name)
+        raise HTTPException(status_code=400, detail="Un dossier avec ce nom existe deja.")
+
+    new_folder = DissertationFolder(
+        name=folder.name,
+        user_id=current_user.id if current_user else None
+    )
     db.add(new_folder)
     db.commit()
     db.refresh(new_folder)
     return new_folder
 
 @app.delete("/folders/{folder_id}")
-def delete_folder(folder_id: int, db: Session = Depends(get_db)):
+def delete_folder(
+    folder_id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
+    """Delete a folder (must belong to current user)"""
     folder = db.query(DissertationFolder).filter(DissertationFolder.id == folder_id).first()
     if not folder:
-        raise HTTPException(status_code=404, detail="Dossier non trouvé.")
-    
+        raise HTTPException(status_code=404, detail="Dossier non trouve.")
+
+    # Verify ownership
+    if current_user and folder.user_id and folder.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Ce dossier ne vous appartient pas")
+
     # Cascade delete is handled by relationship, but we can be explicit
     db.delete(folder)
     db.commit()
-    return {"message": "Dossier supprimé"}
+    return {"message": "Dossier supprime"}
 
 @app.post("/library/save")
-def save_dissertation_to_library(item: DissertationSave, db: Session = Depends(get_db)):
+def save_dissertation_to_library(
+    item: DissertationSave,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
+    """Save a dissertation to a folder (must belong to current user)"""
     folder = db.query(DissertationFolder).filter(DissertationFolder.id == item.folder_id).first()
     if not folder:
-        raise HTTPException(status_code=404, detail="Dossier cible non trouvé.")
-    
+        raise HTTPException(status_code=404, detail="Dossier cible non trouve.")
+
+    # Verify ownership
+    if current_user and folder.user_id and folder.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Ce dossier ne vous appartient pas")
+
     new_save = SavedDissertation(
         folder_id=item.folder_id,
         subject=item.subject,
@@ -959,18 +1118,37 @@ def save_dissertation_to_library(item: DissertationSave, db: Session = Depends(g
     return new_save
 
 @app.get("/library/dissertation/{id}")
-def get_saved_dissertation(id: int, db: Session = Depends(get_db)):
+def get_saved_dissertation(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
+    """Get a saved dissertation (must belong to current user)"""
     item = db.query(SavedDissertation).filter(SavedDissertation.id == id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Dissertation non trouvée.")
+        raise HTTPException(status_code=404, detail="Dissertation non trouvee.")
+
+    # Verify ownership via folder
+    if current_user and item.folder.user_id and item.folder.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Cette dissertation ne vous appartient pas")
+
     return item
 
 @app.delete("/library/dissertation/{id}")
-def delete_saved_dissertation(id: int, db: Session = Depends(get_db)):
+def delete_saved_dissertation(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user)
+):
+    """Delete a saved dissertation (must belong to current user)"""
     item = db.query(SavedDissertation).filter(SavedDissertation.id == id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item non trouvé.")
-    
+        raise HTTPException(status_code=404, detail="Item non trouve.")
+
+    # Verify ownership via folder
+    if current_user and item.folder.user_id and item.folder.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Cette dissertation ne vous appartient pas")
+
     db.delete(item)
     db.commit()
-    return {"message": "Supprimé avec succès"}
+    return {"message": "Supprime avec succes"}

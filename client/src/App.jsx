@@ -4,18 +4,59 @@ import SheetViewer from './components/SheetViewer';
 import ApiKeyManager from './components/ApiKeyManager';
 import DissertationGenerator from './components/DissertationGenerator';
 import Revisions from './components/Revisions';
+import LoginPage from './components/LoginPage';
+import { API_BASE_URL } from './config';
 
 function App() {
   const [activeTab, setActiveTab] = useState('sources');
   const [isApiKeySet, setIsApiKeySet] = useState(null);
+  const [isAuthenticated, setIsAuthenticated] = useState(null); // null = loading, false = not auth, true = auth
+  const [user, setUser] = useState(null);
 
   useEffect(() => {
-    checkApiKey();
+    checkAuth();
   }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      checkApiKey();
+    }
+  }, [isAuthenticated]);
+
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('eps_token');
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  };
+
+  const checkAuth = async () => {
+    const token = localStorage.getItem('eps_token');
+    if (!token) {
+      setIsAuthenticated(false);
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/auth/me`, {
+        headers: getAuthHeaders()
+      });
+
+      if (res.ok) {
+        const userData = await res.json();
+        setUser(userData);
+        setIsAuthenticated(true);
+      } else {
+        localStorage.removeItem('eps_token');
+        setIsAuthenticated(false);
+      }
+    } catch (err) {
+      console.error('Auth check failed:', err);
+      setIsAuthenticated(false);
+    }
+  };
 
   const checkApiKey = async () => {
     try {
-      const res = await fetch('http://localhost:8000/api-key/status');
+      const res = await fetch(`${API_BASE_URL}/api-key/status`);
       const data = await res.json();
       setIsApiKeySet(data.is_set);
     } catch (err) {
@@ -23,22 +64,57 @@ function App() {
     }
   };
 
+  const handleLoginSuccess = (token) => {
+    localStorage.setItem('eps_token', token);
+    checkAuth();
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('eps_token');
+    setIsAuthenticated(false);
+    setUser(null);
+  };
+
   const handleKeyStatusChange = (isSet) => {
     setIsApiKeySet(isSet);
   };
 
+  // Loading state
+  if (isAuthenticated === null) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-16 h-16 bg-slate-900 rounded-2xl flex items-center justify-center text-white font-bold text-2xl mx-auto mb-4 shadow-lg animate-pulse">
+            E1
+          </div>
+          <p className="text-slate-500 font-medium">Chargement...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Not authenticated - show login page
+  if (!isAuthenticated) {
+    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+  }
+
   const tabs = [
     { id: 'sources', label: 'Sources' },
     { id: 'sheets', label: 'Fiches' },
-    { id: 'revisions', label: 'Révisions' },
+    { id: 'revisions', label: 'Revisions' },
     { id: 'dissertation', label: 'Dissertation' },
-    { id: 'apikey', label: 'Réglages' },
+    { id: 'apikey', label: 'Reglages' },
   ];
+
+  // Get user initials for avatar
+  const getUserInitials = () => {
+    if (!user || !user.email) return '??';
+    return user.email.substring(0, 2).toUpperCase();
+  };
 
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Header - Clean & Minimal */}
-      {/* Header - MAJOR Style: Clean, White, Pill Nav */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
 
@@ -78,8 +154,26 @@ function App() {
               <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
               OBJECTIF CAPEPS
             </div>
-            <div className="w-10 h-10 bg-slate-100 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 font-bold hover:bg-slate-200 cursor-pointer transition-colors">
-              LS
+
+            {/* User Menu */}
+            <div className="relative group">
+              <div className="w-10 h-10 bg-slate-100 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 font-bold hover:bg-slate-200 cursor-pointer transition-colors">
+                {getUserInitials()}
+              </div>
+
+              {/* Dropdown */}
+              <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-xl shadow-lg border border-slate-200 py-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
+                <div className="px-4 py-2 border-b border-slate-100">
+                  <p className="text-xs text-slate-500">Connecte en tant que</p>
+                  <p className="text-sm font-bold text-slate-900 truncate">{user?.email}</p>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="w-full px-4 py-2 text-left text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                >
+                  Se deconnecter
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -97,7 +191,7 @@ function App() {
                 </svg>
               </div>
               <p className="text-amber-900 text-sm font-medium">
-                Configuration requise : Ajoutez votre clé API pour commencer l'analyse.
+                Configuration requise : Ajoutez votre cle API pour commencer l'analyse.
               </p>
             </div>
             <button
